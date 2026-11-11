@@ -18,12 +18,13 @@ permissions:
 jobs:
   notify:
     name: Forward event to Telegram
+    if: github.repository == 'agupta07505/SmartIsland'
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
     steps:
       - name: Send Telegram notification
-        uses: actions/github-script@v7
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

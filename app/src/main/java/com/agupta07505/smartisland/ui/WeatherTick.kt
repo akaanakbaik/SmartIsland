@@ -120,7 +120,7 @@ internal fun WeatherTickLayer(
             // behind the pill's own lookup.
             val due = if (weatherPrefs.refreshMs > 0L) weatherPrefs.refreshMs + WEATHER_GRACE_MS else 0L
             if (networkOk && WeatherRefresh.shouldFetch(due, latest != null, age, missingData = false)) {
-                IdleWeather.fetch(context, weatherPrefs)?.let { latest = it }
+                IdleWeather.fetch(context, weatherPrefs, networkAllowed = { settingsNow.value.allowNetworkChecks })?.let { latest = it }
             }
             if (latest != null) snapshot = latest
             delay(WEATHER_POLL_MS)

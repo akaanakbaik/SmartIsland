@@ -30,10 +30,12 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -57,6 +59,8 @@ import com.agupta07505.smartisland.model.WeatherReadouts
 import com.agupta07505.smartisland.model.WeatherRules
 import com.agupta07505.smartisland.ui.glass.Card
 import com.agupta07505.smartisland.util.IdleWeather
+import com.agupta07505.smartisland.util.CitySearch
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 private enum class SearchState { Idle, Searching, NoResults }
@@ -111,7 +115,7 @@ internal fun WeatherSettingsCard(
                 onSelect = { scope.launch { repository.setWeatherLocationSource(it) } }
             )
             when (prefs.source) {
-                WeatherConfig.SOURCE_MANUAL -> ManualCity(prefs.manualCity, repository)
+                WeatherConfig.SOURCE_MANUAL -> ManualCity(prefs.manualCity, repository, settings.allowNetworkChecks)
                 WeatherConfig.SOURCE_LAST_KNOWN -> {
                     Note(stringResource(R.string.weather_cfg_source_last_desc))
                     if (!locationGranted) {
@@ -312,17 +316,30 @@ private fun PermissionButton(onClick: () -> Unit) {
 }
 
 @Composable
-private fun ManualCity(chosen: String, repository: SmartIslandSettingsRepository) {
+private fun ManualCity(chosen: String, repository: SmartIslandSettingsRepository, networkAllowed: Boolean) {
     val scope = rememberCoroutineScope()
+    val networkAllowedNow = rememberUpdatedState(networkAllowed)
     var query by remember { mutableStateOf("") }
     var results by remember { mutableStateOf<List<CityResult>>(emptyList()) }
     var state by remember { mutableStateOf(SearchState.Idle) }
+    var searchJob by remember { mutableStateOf<Job?>(null) }
+
+    LaunchedEffect(networkAllowed) {
+        if (!networkAllowed) {
+            searchJob?.cancel()
+            results = emptyList()
+            state = SearchState.Idle
+        }
+    }
 
     fun search() {
-        if (query.trim().length < WeatherConfig.MIN_SEARCH_LENGTH || state == SearchState.Searching) return
+        if (!networkAllowedNow.value || query.trim().length < WeatherConfig.MIN_SEARCH_LENGTH || state == SearchState.Searching) return
         state = SearchState.Searching
-        scope.launch {
-            val found = IdleWeather.searchCities(query)
+        searchJob = scope.launch {
+            val found = CitySearch.search(query, { networkAllowedNow.value }) { city ->
+                IdleWeather.searchCities(city, { networkAllowedNow.value })
+            }
+            if (!networkAllowedNow.value) return@launch
             results = found
             state = if (found.isEmpty()) SearchState.NoResults else SearchState.Idle
         }
@@ -345,7 +362,7 @@ private fun ManualCity(chosen: String, repository: SmartIslandSettingsRepository
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { search() })
             )
-            Button(onClick = { search() }, enabled = query.trim().length >= WeatherConfig.MIN_SEARCH_LENGTH && state != SearchState.Searching) {
+            Button(onClick = { search() }, enabled = networkAllowed && query.trim().length >= WeatherConfig.MIN_SEARCH_LENGTH && state != SearchState.Searching) {
                 Text(stringResource(R.string.weather_cfg_city_search))
             }
         }
@@ -382,6 +399,7 @@ private fun ManualCity(chosen: String, repository: SmartIslandSettingsRepository
 private fun RefreshNow(enabled: Boolean, prefs: com.agupta07505.smartisland.model.WeatherPrefs) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val networkAllowedNow = rememberUpdatedState(enabled)
     var state by remember { mutableStateOf(RefreshState.Idle) }
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
         OutlinedButton(
@@ -389,9 +407,9 @@ private fun RefreshNow(enabled: Boolean, prefs: com.agupta07505.smartisland.mode
             onClick = {
                 state = RefreshState.Working
                 scope.launch {
-                    val fresh = IdleWeather.fetch(context, prefs)
+                    val fresh = IdleWeather.fetch(context, prefs, networkAllowed = { networkAllowedNow.value })
                     if (fresh != null) IdleWeather.notifyRefreshed()
-                    state = if (fresh != null) RefreshState.Done else RefreshState.Failed
+                    state = if (!networkAllowedNow.value) RefreshState.Idle else if (fresh != null) RefreshState.Done else RefreshState.Failed
                 }
             }
         ) { Text(stringResource(R.string.weather_cfg_refresh_now)) }

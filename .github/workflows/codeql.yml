@@ -1,0 +1,55 @@
+# Smart Island (2026)
+# Copyright Animesh Gupta — github.com/agupta07505
+# Licensed under the GNU GPL v3 License
+
+name: CodeQL scoped analysis
+
+# Enable advanced setup in the repository before using this workflow in place
+# of GitHub's generated default setup. Do not turn off code scanning.
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches: [main, dev, 'audit/**']
+  pull_request:
+    branches: [main, dev]
+  schedule:
+    - cron: '23 4 * * 2'
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [java-kotlin, python, actions]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        if: matrix.language == 'java-kotlin'
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.language == 'java-kotlin' && 'manual' || 'none' }}
+      - name: Trace one complete Android debug build
+        if: matrix.language == 'java-kotlin'
+        # Avoid root assemble, which compiles all benchmark/release variants.
+        # Disable build-cache reuse so CodeQL sees the Kotlin compiler execute.
+        run: sh ./gradlew --no-daemon --stacktrace --max-workers=2 --no-parallel --no-build-cache --rerun-tasks -Pkotlin.daemon.jvmargs=-Xmx2g :app:assembleDebug
+      - name: Analyze and upload security findings
+        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
+        with:
+          category: '/language:${{ matrix.language }}'

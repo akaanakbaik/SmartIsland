@@ -5,4 +5,10 @@
   Licensed under the GNU GPL v3 License
   Do not remove or alter this notice. - Per GPL-3.0 Section 4 & Section 5
 -->
-<full-backup-content />
+<!-- Notification history, diagnostics, location caches and settings can contain private data. -->
+<full-backup-content>
+    <exclude domain="database" path="." />
+    <exclude domain="sharedpref" path="." />
+    <exclude domain="file" path="datastore/" />
+    <exclude domain="file" path="smartisland_debug_log.txt" />
+</full-backup-content>

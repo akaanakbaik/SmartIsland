@@ -984,7 +984,6 @@ class SmartIslandNotificationListenerService : NotificationListenerService() {
             settings.navigationEnabled,
             settings.deviceType
         )
-        android.util.Log.d(TAG, "handleNotificationPosted: mode=$mode key=${sbn.key} title=${extras.getCharSequence(Notification.EXTRA_TITLE)}")
 
         // Quiet imports of what is already in the shade are not new alerts, so they neither count
         // towards the spam threshold nor get buffered.

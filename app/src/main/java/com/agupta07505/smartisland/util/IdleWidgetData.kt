@@ -30,6 +30,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
@@ -50,7 +51,10 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
@@ -147,6 +151,7 @@ fun rememberIdleWidgetData(
     weather: WeatherPrefs = WeatherPrefs()
 ): IdleWidgetData {
     val context = LocalContext.current.applicationContext
+    val networkAllowedNow = rememberUpdatedState(allowNetwork)
     val data = remember { IdleWidgetData() }
     val wantsBattery = active && IdleWidgetKind.Battery in kinds
     val wantsAlarm = active && IdleWidgetKind.NextAlarm in kinds
@@ -330,7 +335,7 @@ fun rememberIdleWidgetData(
             val missingData = (wantsWind && (shown?.windKmh ?: -1f) < 0f) ||
                 (shown != null && WeatherDisplay.missingData(weather.pillMode, weather.effectiveReadouts(), shown))
             if (WeatherRefresh.shouldFetch(weather.refreshMs, shown != null, age, missingData)) {
-                val fresh = IdleWeather.fetch(context, weather)
+                val fresh = IdleWeather.fetch(context, weather, networkAllowed = { networkAllowedNow.value })
                 if (fresh != null) data.weather = fresh
             }
             val shownAge = System.currentTimeMillis() - (data.weather?.fetchedAtMs ?: 0L)
@@ -465,9 +470,24 @@ object IdleWeather {
     fun hasStoredPlace(context: Context): Boolean = storedGps(context, Long.MAX_VALUE) != null || storedIp(context, Long.MAX_VALUE) != null
 
     /** Stores and returns the reading; null when there is no place or the service did not answer. */
-    suspend fun fetch(context: Context, prefs: WeatherPrefs = WeatherPrefs()): WeatherSnapshot? = withContext(Dispatchers.IO) {
+    suspend fun fetch(
+        context: Context,
+        prefs: WeatherPrefs = WeatherPrefs(),
+        networkAllowed: () -> Boolean,
+        request: (String) -> String? = ::httpGet
+    ): WeatherSnapshot? = withContext(Dispatchers.IO) {
+        val requestContext = currentCoroutineContext()
+        fun guardedGet(address: String): String? {
+            requestContext.ensureActive()
+            if (!networkAllowed()) return null
+            val body = request(address)
+            requestContext.ensureActive()
+            return if (networkAllowed()) body else null
+        }
         runCatching {
-            val place = resolvePlace(context, prefs)
+            requestContext.ensureActive()
+            if (!networkAllowed()) return@runCatching null
+            val place = resolvePlace(context, prefs, ::guardedGet)
             if (place == null) {
                 AppLogRecorder.w(TAG, "No place for the weather (source ${prefs.source})")
                 return@runCatching null
@@ -477,17 +497,19 @@ object IdleWeather {
                 AppLogRecorder.w(TAG, "The custom weather provider has no valid https address")
                 return@runCatching null
             }
-            val json = httpGet(url) ?: return@runCatching null
+            val json = guardedGet(url) ?: return@runCatching null
             val readouts = prefs.effectiveReadouts()
             var snapshot = WeatherParser.parseForecast(json, readouts, System.currentTimeMillis()) ?: return@runCatching null
             // Air quality is a second request to Open-Meteo's own service. A failure only leaves that row out; the weather still counts.
             if (WeatherReadouts.AQI in readouts) {
                 val aqi = runCatching {
-                    httpGet(WeatherConfig.airQualityUrl(place.first, place.second))?.let { WeatherParser.parseAqi(it) }
+                    guardedGet(WeatherConfig.airQualityUrl(place.first, place.second))?.let { WeatherParser.parseAqi(it) }
                 }.getOrNull()
                 val extras = snapshot.extras
                 if (aqi != null && extras != null) snapshot = snapshot.copy(extras = extras.copy(aqi = aqi))
             }
+            requestContext.ensureActive()
+            if (!networkAllowed()) return@runCatching null
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putFloat("t", snapshot.temperatureC)
                 .putInt("c", snapshot.weatherCode)
@@ -502,6 +524,7 @@ object IdleWeather {
                 .apply()
             snapshot
         }.getOrElse {
+            if (it is CancellationException) throw it
             AppLogRecorder.w(TAG, "Weather lookup failed", it)
             null
         }
@@ -511,22 +534,28 @@ object IdleWeather {
      * City search for the manual source (Open-Meteo's geocoding service, no key). Empty when the text is too short,
      * offline or nothing matches.
      */
-    suspend fun searchCities(query: String): List<CityResult> = withContext(Dispatchers.IO) {
+    suspend fun searchCities(
+        query: String,
+        networkAllowed: () -> Boolean,
+        request: (String) -> String? = ::httpGet
+    ): List<CityResult> = withContext(Dispatchers.IO) {
+        // Re-check on the IO dispatcher: access may have been revoked while this work was queued.
+        if (!networkAllowed()) return@withContext emptyList()
         val url = WeatherConfig.geocodingUrl(query, Locale.getDefault().language) ?: return@withContext emptyList()
-        runCatching { httpGet(url)?.let { WeatherConfig.parseCities(it) } ?: emptyList() }.getOrElse {
+        runCatching { request(url)?.let { WeatherConfig.parseCities(it) } ?: emptyList() }.getOrElse {
             AppLogRecorder.w(TAG, "City search failed", it)
             emptyList()
         }
     }
 
-    private fun resolvePlace(context: Context, prefs: WeatherPrefs): Pair<Float, Float>? = when (prefs.source) {
+    private fun resolvePlace(context: Context, prefs: WeatherPrefs, request: (String) -> String?): Pair<Float, Float>? = when (prefs.source) {
         WeatherConfig.SOURCE_MANUAL ->
             if (WeatherConfig.hasManualPlace(prefs)) prefs.manualLat to prefs.manualLon else null
         // No location reading and no internet place lookup: only what an earlier reading left behind.
         WeatherConfig.SOURCE_LAST_KNOWN -> storedGps(context, Long.MAX_VALUE) ?: storedIp(context, Long.MAX_VALUE)
         else -> {
             captureLocation(context)
-            storedGps(context, GPS_MAX_AGE_MS) ?: ipPlace(context)
+            storedGps(context, GPS_MAX_AGE_MS) ?: ipPlace(context, request)
         }
     }
 
@@ -545,10 +574,10 @@ object IdleWeather {
         return p.getFloat("ip_lat", 0f) to p.getFloat("ip_lon", 0f)
     }
 
-    private fun ipPlace(context: Context): Pair<Float, Float>? {
+    private fun ipPlace(context: Context, request: (String) -> String?): Pair<Float, Float>? {
         storedIp(context, IP_MAX_AGE_MS)?.let { return it }
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val body = httpGet("https://ipwho.is/") ?: return null
+        val body = request("https://ipwho.is/") ?: return null
         val json = JSONObject(body)
         if (!json.optBoolean("success", true) || !json.has("latitude") || !json.has("longitude")) return null
         val lat = round1(json.optDouble("latitude"))

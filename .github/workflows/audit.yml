@@ -1,0 +1,96 @@
+# Smart Island (2026)
+# Copyright Animesh Gupta — github.com/agupta07505
+# Licensed under the GNU GPL v3 License
+
+name: Audit validation
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches: ['audit/**']
+
+permissions:
+  contents: read
+
+jobs:
+  regression-and-secrets:
+    name: Regression tests and complete-history secret scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Run release and scanner regression tests
+        run: python3 -m unittest discover -s scripts/tests -v
+      - name: Verify backup exclusions
+        run: python3 tests/test_backup_rules.py -v
+      - name: Download verified Gitleaks 8.30.1
+        run: |
+          curl --fail --location --retry 3 --max-time 120 \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            --output "$RUNNER_TEMP/gitleaks.tar.gz"
+          printf '%s  %s\n' '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb' "$RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check --status
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+      - name: Scan every accessible Git revision for secrets
+        run: |
+          mkdir -p build/reports/audit
+          "$RUNNER_TEMP/gitleaks" version
+          "$RUNNER_TEMP/gitleaks" git --redact=100 --log-opts="--all" \
+            --report-format=json --report-path=build/reports/audit/gitleaks.json .
+      - name: Preserve redacted secret-scan results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: secret-scan-${{ github.run_id }}
+          path: build/reports/audit/gitleaks.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  android:
+    name: Compile, lint, test and inspect unsigned builds
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      # The audit must never use signing credentials, even on workflow_call.
+      SIGNING_STORE_FILE: ''
+      SIGNING_STORE_PASSWORD: ''
+      SIGNING_KEY_ALIAS: ''
+      SIGNING_KEY_PASSWORD: ''
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Verify exact validation commit
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Compile Kotlin, run unit tests and build debug APK
+        run: sh ./gradlew --no-daemon --stacktrace --max-workers=2 --no-parallel -Pkotlin.daemon.jvmargs=-Xmx2g :app:compileDebugKotlin :app:testDebugUnitTest :app:assembleDebug
+      - name: Run debug and release Android Lint
+        run: sh ./gradlew --no-daemon --stacktrace --max-workers=2 --no-parallel -Pkotlin.daemon.jvmargs=-Xmx2g :app:lintDebug :app:lintRelease
+      - name: Build an unsigned release APK
+        run: sh ./gradlew --no-daemon --stacktrace --max-workers=2 --no-parallel -Pkotlin.daemon.jvmargs=-Xmx2g :app:assembleRelease
+      - name: Export resolved build and application dependency graph
+        run: sh ./gradlew --no-daemon --stacktrace --max-workers=2 --no-parallel -I scripts/audit-dependencies.init.gradle auditDependencyInventory
+      - name: Query OSV for resolved direct and transitive dependencies
+        run: python3 scripts/check_dependencies.py build/reports/audit/dependencies.json
+      - name: Preserve validation evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: android-validation-${{ github.run_id }}
+          path: |
+            app/build/reports
+            app/build/test-results
+            build/reports/audit
+            app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/apk/release/app-release-unsigned.apk
+          if-no-files-found: warn
+          retention-days: 14

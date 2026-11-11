@@ -2,13 +2,13 @@
 
 ## Supported Versions
 
-Security fixes are handled for the current v3 release and the `main` branch unless a separate maintained release branch is announced.
+Report issues against the current `main` branch or the latest release, and include the exact commit or APK version. Older releases have no separately documented maintenance guarantee. This policy describes reporting scope; it does not promise fixes or release timelines on behalf of upstream maintainers.
 
 | Version | Supported |
 | --- | --- |
-| `3.x` | Yes |
-| `main` | Yes |
-| `< 3.0` | No |
+| Latest release | Current reporting scope |
+| `main` | Current reporting scope |
+| Older releases | Include reproduction on a current version when possible |
 
 ## Reporting A Vulnerability
 

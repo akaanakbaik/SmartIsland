@@ -179,9 +179,23 @@ fun NotificationHistorySection(
         }
     }
 
+    val historyLifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(resolvedHistoryRepo, historyLifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) scope.launch { resolvedHistoryRepo.reload() }
+        }
+        historyLifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { historyLifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    LaunchedEffect(resolvedHistoryRepo, settings.notificationHistoryRetentionHours) {
+        resolvedHistoryRepo.reload()
+    }
     val historyEntries by resolvedHistoryRepo.history.collectAsState(initial = emptyList())
     // Dialog and filter state is saved, so rotating the phone keeps an open dialog open.
     var searchQuery by rememberSaveable { mutableStateOf("") }
+    LaunchedEffect(resolvedHistoryRepo, searchQuery) {
+        resolvedHistoryRepo.reload()
+    }
     var selectedFilterPackage by rememberSaveable { mutableStateOf<String?>(null) }
     var showClearAllConfirm by rememberSaveable { mutableStateOf(false) }
     var showAppFilterDialog by rememberSaveable { mutableStateOf(false) }

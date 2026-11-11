@@ -7,7 +7,7 @@ name: Build & Notify
 on:
   push:
     branches: [main, dev]
-    paths-ignore: &non_code_paths
+    paths-ignore:
       - "**/*.md"
       - "assets/**"
       - "screenshots/**"
@@ -30,12 +30,13 @@ defaults:
 jobs:
   notify-telegram:
     name: Notify Telegram
+    if: github.repository == 'agupta07505/SmartIsland'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Set up Python 3
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.x"
 
@@ -53,15 +54,14 @@ jobs:
   build:
     name: Lint, test & debug build
     runs-on: ubuntu-latest
-    needs: notify-telegram
     timeout-minutes: 30
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
           java-version: "17"
@@ -75,7 +75,7 @@ jobs:
 
       - name: Upload lint reports
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: lint-reports
           path: app/build/reports/lint-results-*.html
@@ -83,7 +83,7 @@ jobs:
           retention-days: 14
 
       - name: Upload debug APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: SmartIsland-Debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
@@ -94,14 +94,14 @@ jobs:
     name: Forward debug APK to Telegram
     runs-on: ubuntu-latest
     needs: build
-    if: ${{ github.ref == 'refs/heads/dev' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.repository == 'agupta07505/SmartIsland' && (github.ref == 'refs/heads/dev' || github.event_name == 'workflow_dispatch') }}
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Download debug APK
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: SmartIsland-Debug-apk
 

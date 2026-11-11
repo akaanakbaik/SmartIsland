@@ -77,29 +77,162 @@ object ShizukuManager {
         }
     }
 
-    private fun runShizukuCommands(commands: List<String>): Result<String> {
+    internal data class CommandOutcome(val command: String, val exitCode: Int)
+    internal data class CapabilityCheck(val name: String, val granted: Boolean, val required: Boolean)
+
+    internal fun commandScript(commands: List<String>, marker: String): String =
+        commands.mapIndexed { index, command ->
+            "$command\n_si_status=$?\nprintf '\\n$marker:$index:%s\\n' \"\$_si_status\""
+        }.joinToString("\n")
+
+    internal fun parseCommandOutcomes(commands: List<String>, output: String, marker: String): List<CommandOutcome> {
+        val status = Regex("^${Regex.escape(marker)}:(\\d+):(\\d+)$")
+        val found = output.lineSequence().mapNotNull { status.matchEntire(it.trim()) }.map {
+            it.groupValues[1].toInt() to it.groupValues[2].toInt()
+        }.toList()
+        require(found.size == commands.size && found.map { it.first } == commands.indices.toList()) {
+            "Shizuku setup did not return a result for every command."
+        }
+        return found.map { (index, code) -> CommandOutcome(commands[index], code) }
+    }
+
+    internal fun assessSetup(
+        outcomes: List<CommandOutcome>,
+        optionalCommands: Set<String>,
+        checks: List<CapabilityCheck>
+    ): Result<String> {
+        val failedRequired = outcomes.filter { it.exitCode != 0 && it.command !in optionalCommands }
+        val missingRequired = checks.filter { it.required && !it.granted }
+        if (failedRequired.isNotEmpty() || missingRequired.isNotEmpty()) {
+            val detail = missingRequired.joinToString { it.name }.ifBlank {
+                "${failedRequired.size} required command(s) failed"
+            }
+            return Result.failure(IllegalStateException("Shizuku setup incomplete: $detail"))
+        }
+        val optionalFailures = outcomes.count { it.exitCode != 0 && it.command in optionalCommands }
+        val missingOptional = checks.filter { !it.required && !it.granted }.joinToString { it.name }
+        return Result.success(buildString {
+            append(if (checks.isEmpty()) "Setup commands completed." else "Required access verified.")
+            if (optionalFailures > 0) append(" $optionalFailures optional command(s) were unsupported or failed.")
+            if (missingOptional.isNotEmpty()) append(" Optional access not verified: $missingOptional.")
+        })
+    }
+
+    internal class SetupErrorDrain(
+        private val worker: Thread,
+        private val failure: java.util.concurrent.atomic.AtomicReference<Throwable?>
+    ) {
+        fun await(): Result<Unit> {
+            worker.join()
+            return failure.get()?.let {
+                Result.failure<Unit>(IllegalStateException("Unable to read Shizuku setup error stream.", it))
+            } ?: Result.success(Unit)
+        }
+    }
+
+    internal fun drainSetupErrors(
+        stream: () -> java.io.InputStream,
+        onFailure: () -> Unit = {}
+    ): SetupErrorDrain {
+        val failure = java.util.concurrent.atomic.AtomicReference<Throwable?>(null)
+        val worker = Thread({
+            runCatching {
+                stream().use { input ->
+                    val buffer = ByteArray(4096)
+                    while (input.read(buffer) >= 0) { /* Discard raw OEM diagnostics. */ }
+                }
+            }.exceptionOrNull()?.let {
+                failure.set(it)
+                // A failed drain must not leave stdout blocked behind a full stderr pipe.
+                runCatching { onFailure() }
+            }
+        }, "ShizukuSetupStderr").apply { isDaemon = true; start() }
+        return SetupErrorDrain(worker, failure)
+    }
+
+    private fun runShizukuCommands(
+        commands: List<String>,
+        optionalCommands: Set<String> = emptySet(),
+        verify: () -> List<CapabilityCheck> = { emptyList() }
+    ): Result<String> {
         if (!hasPermission()) {
             return Result.failure(IllegalStateException("Shizuku permission not granted or service binder offline."))
         }
         return runCatching {
-            val fullScript = commands.joinToString("; ")
+            val marker = "SI_SETUP_" + java.util.UUID.randomUUID().toString().replace("-", "")
+            val fullScript = commandScript(commands, marker)
             val newProcessMethod = Shizuku::class.java.getDeclaredMethod(
-                "newProcess",
-                Array<String>::class.java,
-                Array<String>::class.java,
-                String::class.java
+                "newProcess", Array<String>::class.java, Array<String>::class.java, String::class.java
             ).apply { isAccessible = true }
-
             val process = newProcessMethod.invoke(null, arrayOf("sh", "-c", fullScript), null, null) as Process
+            try {
+                // Drain stderr concurrently so an unsupported OEM command cannot fill the pipe.
+                val stderr = drainSetupErrors({ process.errorStream }, { process.destroy() })
+                val output = process.inputStream.bufferedReader().use { it.readText() }
+                val exitCode = process.waitFor()
+                stderr.await().getOrThrow()
+                check(exitCode == 0) { "Shizuku setup shell exited with code $exitCode." }
+                assessSetup(parseCommandOutcomes(commands, output, marker), optionalCommands, verify()).getOrThrow()
+            } finally {
+                process.destroy()
+            }
+        }
+    }
 
-            val output = BufferedReader(InputStreamReader(process.inputStream)).use { it.readText() }
-            val error = BufferedReader(InputStreamReader(process.errorStream)).use { it.readText() }
-            val exitCode = process.waitFor()
+    private fun enabledComponent(context: Context, setting: String, component: String): Boolean = runCatching {
+        val expected = ComponentName.unflattenFromString(component)
+        Settings.Secure.getString(context.contentResolver, setting).orEmpty().split(':').any {
+            expected != null && ComponentName.unflattenFromString(it) == expected
+        }
+    }.getOrDefault(false)
 
-            if (exitCode == 0 || output.isNotBlank() || error.isBlank()) {
-                "Permissions auto-granted successfully via Shizuku."
-            } else {
-                throw RuntimeException("Shizuku command error (exit $exitCode): $error $output")
+    private fun accessibilityAllowed(context: Context): Boolean = runCatching {
+        Settings.Secure.getInt(context.contentResolver, Settings.Secure.ACCESSIBILITY_ENABLED, 0) == 1 &&
+            enabledComponent(context, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+                "${context.packageName}/${SmartIslandOverlayService::class.java.name}")
+    }.getOrDefault(false)
+
+    private fun notificationListenerAllowed(context: Context): Boolean = runCatching {
+        val component = ComponentName(context, SmartIslandNotificationListenerService::class.java)
+        if (android.os.Build.VERSION.SDK_INT >= 27) {
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+            manager.isNotificationListenerAccessGranted(component)
+        } else {
+            enabledComponent(context, "enabled_notification_listeners", component.flattenToString())
+        }
+    }.getOrDefault(false)
+
+    private fun appOpAllowed(context: Context, operation: String): Boolean = runCatching {
+        val ops = context.getSystemService(Context.APP_OPS_SERVICE) as android.app.AppOpsManager
+        @Suppress("DEPRECATION")
+        ops.checkOpNoThrow(operation, android.os.Process.myUid(), context.packageName) == android.app.AppOpsManager.MODE_ALLOWED
+    }.getOrDefault(false)
+
+    fun isBackgroundProtectionAllowed(context: Context): Boolean = runCatching {
+        val power = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+        power.isIgnoringBatteryOptimizations(context.packageName) &&
+            appOpAllowed(context, "android:run_in_background") &&
+            appOpAllowed(context, "android:run_any_in_background")
+    }.getOrDefault(false)
+
+    private fun setupChecks(context: Context, scope: SetupScope): List<CapabilityCheck> = buildList {
+        add(CapabilityCheck("overlay", Settings.canDrawOverlays(context), true))
+        add(CapabilityCheck("accessibility", accessibilityAllowed(context), true))
+        add(CapabilityCheck("notification listener", notificationListenerAllowed(context), true))
+        add(CapabilityCheck("write system settings", Settings.System.canWrite(context), false))
+        add(CapabilityCheck("background app-ops and battery exemption", isBackgroundProtectionAllowed(context), false))
+        if (android.os.Build.VERSION.SDK_INT >= 31) add(CapabilityCheck("Bluetooth connect",
+            context.checkSelfPermission("android.permission.BLUETOOTH_CONNECT") == PackageManager.PERMISSION_GRANTED, false))
+        if (android.os.Build.VERSION.SDK_INT >= 33) add(CapabilityCheck("post notifications",
+            context.checkSelfPermission("android.permission.POST_NOTIFICATIONS") == PackageManager.PERMISSION_GRANTED, false))
+        if (android.os.Build.VERSION.SDK_INT >= 35) add(CapabilityCheck("sensitive notifications",
+            isSensitiveNotificationAccessAllowed(context), false))
+        if (scope == SetupScope.All) {
+            add(CapabilityCheck("usage access", appOpAllowed(context, "android:get_usage_stats"), false))
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+            add(CapabilityCheck("Do Not Disturb access", manager.isNotificationPolicyAccessGranted, false))
+            listOf("android.permission.ACCESS_FINE_LOCATION", "android.permission.ACCESS_COARSE_LOCATION").forEach {
+                add(CapabilityCheck(it.substringAfterLast('.'), context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED, false))
             }
         }
     }
@@ -250,7 +383,7 @@ object ShizukuManager {
      * - Usage access (recent apps in the App Shortcuts)
      * - Do Not Disturb access (the silent ringer, the mode idle widget)
      * - Location, fine and coarse (the weather widget, the Wi-Fi network name)
-     * A ROM that lacks one of them just prints an error; the commands are joined with ";" so the rest still run.
+     * Unsupported commands are recorded as optional failures; the remaining commands still run.
      * The VPN consent is a system dialog that cannot be granted from here.
      */
     internal fun optionalCommands(pkg: String): List<String> = listOf(
@@ -292,7 +425,9 @@ object ShizukuManager {
                 "settings put secure accessibility_enabled 1"
             )
 
-            runShizukuCommands(commands)
+            runShizukuCommands(commands, verify = {
+                listOf(CapabilityCheck("accessibility", accessibilityAllowed(context), true))
+            })
         }
 
     suspend fun autoGrantNecessaryPermissions(context: Context): Result<String> = grant(context, SetupScope.Necessary)
@@ -314,7 +449,10 @@ object ShizukuManager {
             mergedAccessibilityServices = getMergedAccessibilityServices(context, accessibilityClass),
             mergedNotificationListeners = getMergedNotificationListeners(context, notificationClass)
         )
-        runShizukuCommands(commands).onSuccess { saveScope(context, scope) }
+        // Different ROMs support different routes to the same grant. Verify core effective state
+        // after all attempts, while reporting optional OEM/feature failures instead of aborting them.
+        runShizukuCommands(commands, commands.toSet()) { setupChecks(context, scope) }
+            .onSuccess { saveScope(context, scope) }
     }
 
     /**
@@ -364,7 +502,10 @@ object ShizukuManager {
     }
 
     suspend fun grantSensitiveNotificationAccess(context: Context): Result<String> = withContext(Dispatchers.IO) {
-        runShizukuCommands(sensitiveNotificationCommands(context.packageName))
+        val commands = sensitiveNotificationCommands(context.packageName)
+        runShizukuCommands(commands, commands.toSet()) {
+            listOf(CapabilityCheck("sensitive notifications", isSensitiveNotificationAccessAllowed(context), true))
+        }
     }
 
     /**
@@ -399,7 +540,7 @@ object ShizukuManager {
         onGranted: suspend () -> Unit
     ): Result<String> = withContext(Dispatchers.IO) {
         val pkg = context.packageName
-        val granted = runShizukuCommands(sensitiveNotificationCommands(pkg))
+        val granted = grantSensitiveNotificationAccess(context)
         if (granted.isFailure) return@withContext granted
 
         val accessibilityComponent = "$pkg/${SmartIslandOverlayService::class.java.name}"
@@ -433,6 +574,8 @@ object ShizukuManager {
             "am set-standby-bucket $pkg active",
             "dumpsys deviceidle whitelist +$pkg"
         )
-        runShizukuCommands(commands)
+        runShizukuCommands(commands, commands.toSet()) {
+            listOf(CapabilityCheck("background app-ops and battery exemption", isBackgroundProtectionAllowed(context), true))
+        }
     }
 }

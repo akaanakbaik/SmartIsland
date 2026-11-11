@@ -18,10 +18,9 @@ val signingStoreFile = providers.environmentVariable("SIGNING_STORE_FILE")
 val signingStorePassword = providers.environmentVariable("SIGNING_STORE_PASSWORD")
 val signingKeyAlias = providers.environmentVariable("SIGNING_KEY_ALIAS")
 val signingKeyPassword = providers.environmentVariable("SIGNING_KEY_PASSWORD")
-val hasReleaseSigning = signingStoreFile.isPresent &&
-    signingStorePassword.isPresent &&
-    signingKeyAlias.isPresent &&
-    signingKeyPassword.isPresent
+val hasReleaseSigning = listOf(
+    signingStoreFile, signingStorePassword, signingKeyAlias, signingKeyPassword
+).all { !it.orNull.isNullOrBlank() }
 
 android {
     namespace = "com.agupta07505.smartisland"
@@ -66,7 +65,7 @@ android {
     }
 
     lint {
-        checkReleaseBuilds = false
+        checkReleaseBuilds = true
         abortOnError = true
         warningsAsErrors = true
         checkDependencies = true

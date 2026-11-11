@@ -38,6 +38,7 @@ object AppModule {
     @Provides
     @Singleton
     fun provideNotificationHistoryRepository(
-        @ApplicationContext context: Context
-    ): INotificationHistoryRepository = NotificationHistoryRepository(context)
+        @ApplicationContext context: Context,
+        settingsRepository: SmartIslandSettingsRepository
+    ): INotificationHistoryRepository = NotificationHistoryRepository(context, settingsRepository)
 }

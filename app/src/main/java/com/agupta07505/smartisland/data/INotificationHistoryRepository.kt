@@ -17,6 +17,7 @@ interface INotificationHistoryRepository {
     suspend fun deleteByPackage(packageName: String): Int
     suspend fun clearAll()
     suspend fun search(query: String): List<NotificationHistoryEntry>
+    /** Prunes using the current persisted policy; retentionHours is a compatibility hint from callers. */
     suspend fun cleanupOldEntries(retentionHours: Int)
     suspend fun reload()
 }

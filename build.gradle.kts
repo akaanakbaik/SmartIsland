@@ -12,8 +12,9 @@ buildscript {
     }
     dependencies {
         classpath("com.android.tools.build:gradle:9.1.1")
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.21")
-        classpath("org.jetbrains.kotlin:compose-compiler-gradle-plugin:2.3.21")
+        // 2.4.21 includes the KAPT cache deserialization fix (CVE-2026-53914).
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.4.21")
+        classpath("org.jetbrains.kotlin:compose-compiler-gradle-plugin:2.4.21")
         classpath("com.google.dagger:hilt-android-gradle-plugin:2.60.1")
         classpath("androidx.baselineprofile:androidx.baselineprofile.gradle.plugin:1.4.1")
     }

@@ -5,10 +5,18 @@
   Licensed under the GNU GPL v3 License
   Do not remove or alter this notice. - Per GPL-3.0 Section 4 & Section 5
 -->
+<!-- Apply the same privacy boundary to cloud backup and Android device-to-device transfer. -->
 <data-extraction-rules>
     <cloud-backup>
-        <include
-            domain="sharedpref"
-            path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="file" path="datastore/" />
+        <exclude domain="file" path="smartisland_debug_log.txt" />
     </cloud-backup>
+    <device-transfer>
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="file" path="datastore/" />
+        <exclude domain="file" path="smartisland_debug_log.txt" />
+    </device-transfer>
 </data-extraction-rules>

@@ -292,14 +292,8 @@ class ConnectivityEventMonitor(
         vpnJob = scope.launch {
             postVpn("VPN connected", if (settingsProvider().allowNetworkChecks) "Finding location…" else "Secure connection active")
             if (settingsProvider().allowNetworkChecks) {
-                // The tunnel needs a moment before traffic flows through it, so retry a few times.
-                var location: String? = null
-                for (attempt in 1..LOOKUP_ATTEMPTS) {
-                    delay(if (attempt == 1) 1500L else 2000L)
-                    location = lookupVpnLocation(network)
-                    if (location != null) break
-                }
-                if (location == null) {
+                val location = lookupVpnLocation(network)
+                if (location == null && settingsProvider().allowNetworkChecks) {
                     runCatching { AppLogRecorder.w(TAG, "VPN location lookup failed after $LOOKUP_ATTEMPTS attempts") }
                 }
                 postVpn(location ?: "VPN connected", if (location != null) "VPN connected" else "Secure connection active", autoExpand = false)
@@ -326,10 +320,15 @@ class ConnectivityEventMonitor(
     }
 
     private suspend fun lookupVpnLocation(network: Network): String? = withContext(Dispatchers.IO) {
-        LOOKUP_URLS.firstNotNullOfOrNull { url -> fetchLocation(network, url) }
+        VpnLocationLookup.lookup(
+            networkAllowed = { settingsProvider().allowNetworkChecks },
+            endpoints = LOOKUP_URLS,
+            attempts = LOOKUP_ATTEMPTS
+        ) { url -> fetchLocation(network, url) }
     }
 
     private fun fetchLocation(network: Network, address: String): String? = runCatching {
+        if (!settingsProvider().allowNetworkChecks) return@runCatching null
         val conn = (network.openConnection(URL(address)) as HttpURLConnection).apply {
             connectTimeout = 4000
             readTimeout = 4000
@@ -337,6 +336,8 @@ class ConnectivityEventMonitor(
             setRequestProperty("User-Agent", "SmartIsland")
         }
         try {
+            // openConnection is lazy; the response access below starts the HTTP request.
+            if (!settingsProvider().allowNetworkChecks) return@runCatching null
             if (conn.responseCode != 200) return@runCatching null
             val json = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
             if (!json.optBoolean("success", true) || json.has("error")) return@runCatching null

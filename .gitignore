@@ -50,4 +50,12 @@ ISLAND_HORIZONTAL_ALIGNMENT_FIX.md
 .translate-env/
 
 # Scripts
-scripts/
+scripts/*
+!scripts/release_notes.py
+!scripts/check_dependencies.py
+!scripts/audit-dependencies.init.gradle
+!scripts/tests/
+scripts/tests/*
+!scripts/tests/test_release_notes.py
+!scripts/tests/test_check_dependencies.py
+__pycache__/

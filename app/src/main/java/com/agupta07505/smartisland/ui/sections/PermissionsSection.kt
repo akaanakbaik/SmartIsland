@@ -102,8 +102,7 @@ fun PermissionsSection(
             Toast.makeText(context, context.getString(R.string.shizuku_check_done), Toast.LENGTH_SHORT).show()
         }
     }
-    var isOemAutostartEnabled by remember { mutableStateOf(batteryIgnored) }
-    var isOverlayWarningDisabled by remember { mutableStateOf(false) }
+    var isOemAutostartEnabled by remember { mutableStateOf(ShizukuManager.isBackgroundProtectionAllowed(context)) }
     var sensitiveAllowed by remember { mutableStateOf(ShizukuManager.isSensitiveNotificationAccessAllowed(context)) }
     // One tap of either setup button: check Shizuku is ready, ask for its permission, or run the chosen setup.
     fun runSetup(scopeToGrant: ShizukuManager.SetupScope) {
@@ -123,12 +122,11 @@ fun PermissionsSection(
                     }
                     isExecutingShizuku = false
                     runningScope = null
-                    result.onSuccess {
-                        Toast.makeText(context, context.getString(R.string.shizuku_success), Toast.LENGTH_LONG).show()
-                        isOemAutostartEnabled = true
-                        isOverlayWarningDisabled = true
-                        sensitiveAllowed = ShizukuManager.isSensitiveNotificationAccessAllowed(context)
-                        onRefreshPermissions()
+                    isOemAutostartEnabled = ShizukuManager.isBackgroundProtectionAllowed(context)
+                    sensitiveAllowed = ShizukuManager.isSensitiveNotificationAccessAllowed(context)
+                    onRefreshPermissions()
+                    result.onSuccess { message ->
+                        Toast.makeText(context, message, Toast.LENGTH_LONG).show()
                         // Setup is the moment to find out which Shizuku methods work on this phone.
                         showCheckDialog = true
                     }.onFailure { err ->
@@ -144,6 +142,7 @@ fun PermissionsSection(
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 sensitiveAllowed = ShizukuManager.isSensitiveNotificationAccessAllowed(context)
+                isOemAutostartEnabled = ShizukuManager.isBackgroundProtectionAllowed(context)
             }
         }
         permLifecycleOwner.lifecycle.addObserver(observer)
@@ -438,8 +437,8 @@ fun PermissionsSection(
             onClick = onBatteryClick
         )
 
-        val warningIconColor = if (isOverlayWarningDisabled) Color(0xFF0F9F6E) else MaterialTheme.colorScheme.onSurfaceVariant
-        val warningBgColor = if (isOverlayWarningDisabled) Color(0xFF0F9F6E).copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant
+        val warningIconColor = MaterialTheme.colorScheme.onSurfaceVariant
+        val warningBgColor = MaterialTheme.colorScheme.surfaceVariant
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp),
@@ -469,7 +468,7 @@ fun PermissionsSection(
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
-                                imageVector = if (isOverlayWarningDisabled) Icons.Rounded.CheckCircle else Icons.Rounded.VisibilityOff,
+                                imageVector = Icons.Rounded.VisibilityOff,
                                 contentDescription = null,
                                 tint = warningIconColor,
                                 modifier = Modifier.size(22.dp)
@@ -482,27 +481,11 @@ fun PermissionsSection(
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
-                            if (isOverlayWarningDisabled) {
-                                Spacer(Modifier.height(3.dp))
-                                Box(
-                                    modifier = Modifier
-                                        .background(Color(0xFF0F9F6E).copy(alpha = 0.12f), shape = RoundedCornerShape(6.dp))
-                                        .padding(horizontal = 8.dp, vertical = 2.dp)
-                                ) {
-                                    Text(
-                                        text = "Configured",
-                                        color = Color(0xFF0F9F6E),
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                            }
                         }
                     }
                     Spacer(Modifier.width(10.dp))
                     OutlinedButton(
                         onClick = {
-                            isOverlayWarningDisabled = true
                             val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
                                 putExtra(Settings.EXTRA_APP_PACKAGE, "android")
                             }
@@ -514,7 +497,7 @@ fun PermissionsSection(
                         shape = RoundedCornerShape(10.dp),
                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
                     ) {
-                        Text(if (isOverlayWarningDisabled) "Open" else "Hide Alert", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Text("Open", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     }
                 }
                 Spacer(Modifier.height(10.dp))
@@ -579,7 +562,7 @@ fun PermissionsSection(
                                         .padding(horizontal = 8.dp, vertical = 2.dp)
                                 ) {
                                     Text(
-                                        text = "Configured",
+                                        text = "Background access verified",
                                         color = Color(0xFF0F9F6E),
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold
@@ -595,9 +578,9 @@ fun PermissionsSection(
                                 onClick = {
                                     scope.launch {
                                         val result = ShizukuManager.grantOemAutostartAndKillProtection(context)
-                                        result.onSuccess {
-                                            isOemAutostartEnabled = true
-                                            Toast.makeText(context, "OEM autostart granted via Shizuku!", Toast.LENGTH_SHORT).show()
+                                        result.onSuccess { message ->
+                                            isOemAutostartEnabled = ShizukuManager.isBackgroundProtectionAllowed(context)
+                                            Toast.makeText(context, message, Toast.LENGTH_LONG).show()
                                         }.onFailure { err ->
                                             Toast.makeText(context, "Error: ${err.localizedMessage}", Toast.LENGTH_SHORT).show()
                                         }
@@ -611,7 +594,6 @@ fun PermissionsSection(
                         }
                         OutlinedButton(
                             onClick = {
-                                isOemAutostartEnabled = true
                                 OemAutostartUtil.openAutostartSettings(context)
                             },
                             shape = RoundedCornerShape(10.dp),
